@@ -43,7 +43,7 @@ jobs:
         with:
           name: vertigo-red-xhci
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          useDaemon: false
+          skipPush: true
       - name: Evaluate recipes and NixOS integration
         run: |
           nix flake check --no-build --no-update-lock-file
@@ -52,6 +52,17 @@ jobs:
           done
       - name: Build and compare kernel configurations
         run: nix build --no-update-lock-file .#checks.x86_64-linux.kernel-config
+      - name: Verify Cachix write access before compiling kernels
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          check_path="$(readlink -f result)"
+          baseline_config="$(nix eval --raw .#packages.x86_64-linux.baseline.configfile.outPath)"
+          diagnostic_config="$(nix eval --raw .#packages.x86_64-linux.diagnostic.configfile.outPath)"
+          if ! cachix push vertigo-red-xhci "$check_path" "$baseline_config" "$diagnostic_config"; then
+            echo '::error::Cachix publication failed. Replace CACHIX_AUTH_TOKEN with a valid token that has Read and Write permission for vertigo-red-xhci, then rerun the workflow.'
+            exit 1
+          fi
 
   build:
     name: Build ${{ matrix.variant }}

@@ -45,10 +45,12 @@ quirks, or change exposure controls. Keep those settings equal during A/B tests.
 
 1. In this repository open **Settings → Secrets and variables → Actions**.
 2. Add a repository secret named **`CACHIX_AUTH_TOKEN`**, containing a Cachix token
-   with **write access to `vertigo-red-xhci`**. Do not commit or paste the token
-   into source files.
+   with **Read and Write access to `vertigo-red-xhci`**. A read-only token or a
+   token for another cache will fail with `403 Forbidden`. Do not commit or paste
+   the token into source files.
 3. Open **Actions → Build and publish xHCI kernels → Run workflow**. Code changes
-   on `main` also trigger it. Both variants build in separate jobs after checks.
+   on `main` also trigger it. Both variants build in separate jobs after checks
+   and a small test publication that verifies cache write access.
 
 A successful run means the kernel image, modules and development output were
 built, pushed and their public `.narinfo` entries retrieved. Each job saves small
