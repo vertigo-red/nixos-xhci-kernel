@@ -38,7 +38,9 @@ experiment on Linux 7.2.9, not an exact reproduction of those Fedora builds.
 
 The recipes retain Nixpkgs' standard configuration, including xHCI, UVC, Intel
 IOMMU, tracepoints and dynamic debugging. CI checks these features and compares
-the configs. It does not disable IOMMU or power management, set permanent UVC
+the configs. Before the full builds, it runs the real kernel preparation phase,
+checks the generated release and compiles `xhci-ring.c` for both variants.
+It does not disable IOMMU or power management, set permanent UVC
 quirks, or change exposure controls. Keep those settings equal during A/B tests.
 
 ## First GitHub Actions run
@@ -132,6 +134,7 @@ needed for an ordinary full NixOS rebuild, which may build unrelated packages.
 nix flake check --no-build
 nix eval --json .#lib.integration
 nix build .#checks.x86_64-linux.kernel-config
+nix build .#checks.x86_64-linux.kernel-prepare
 nix build .#baseline .#baseline-modules .#baseline-dev
 nix build .#diagnostic .#diagnostic-modules .#diagnostic-dev
 ```

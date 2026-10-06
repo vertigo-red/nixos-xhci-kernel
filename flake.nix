@@ -14,18 +14,43 @@
           patch = ./patches/0001-xhci-move-dequeue-to-next-valid-td.patch;
         }
       ];
-      mkKernel = variant: stock.override (args: {
-        pname = "linux-xhci-${variant}";
-        modDirVersion = "${stock.modDirVersion}-xhci-${variant}";
-        extraMakeFlags = (args.extraMakeFlags or [ ]) ++ [ "LOCALVERSION=-xhci-${variant}" ];
-        kernelPatches = (args.kernelPatches or [ ]) ++ commonPatches
-          ++ pkgs.lib.optional (variant == "diagnostic") {
-            name = "xhci-missed-service-diagnostic";
-            patch = ./patches/0002-xhci-missed-service-diagnostic.patch;
-          };
-      });
+      mkKernel = variant:
+        let
+          release = "${stock.modDirVersion}-xhci-${variant}";
+          kernel = stock.override (args: {
+            pname = "linux-xhci-${variant}";
+            # mainline.nix replaces top-level modDirVersion with the upstream
+            # version; argsOverride is merged after those mainline defaults.
+            argsOverride = (args.argsOverride or { }) // {
+              modDirVersion = release;
+            };
+            extraMakeFlags = (args.extraMakeFlags or [ ]) ++ [ "LOCALVERSION=-xhci-${variant}" ];
+            kernelPatches = (args.kernelPatches or [ ]) ++ commonPatches
+              ++ pkgs.lib.optional (variant == "diagnostic") {
+                name = "xhci-missed-service-diagnostic";
+                patch = ./patches/0002-xhci-missed-service-diagnostic.patch;
+              };
+          });
+        in
+        # Catch a dropped override during evaluation, before an expensive build.
+        assert kernel.modDirVersion == release;
+        kernel;
       baseline = mkKernel "baseline";
       diagnostic = mkKernel "diagnostic";
+      # Run the real kernel configure/prepare phase and compile the changed
+      # translation unit without waiting for a complete kernel build.
+      prepareCheck = kernel: kernel.overrideAttrs (_: {
+        pname = "${kernel.pname}-prepare-check";
+        outputs = [ "out" ];
+        buildFlags = [ "drivers/usb/host/xhci-ring.o" ];
+        installPhase = ''
+          test "$(cat include/config/kernel.release)" = "${kernel.modDirVersion}"
+          test -s drivers/usb/host/xhci-ring.o
+          mkdir -p "$out"
+          cp include/config/kernel.release "$out/release"
+        '';
+        postInstall = "";
+      });
     in
     {
       packages.${system} = {
@@ -37,10 +62,17 @@
         default = diagnostic;
       };
 
-      checks.${system}.kernel-config = pkgs.runCommand "xhci-kernel-config-check" { } ''
-        bash ${./scripts/check-configs.sh} ${baseline.configfile} ${diagnostic.configfile}
-        touch "$out"
-      '';
+      checks.${system} = {
+        kernel-config = pkgs.runCommand "xhci-kernel-config-check" { } ''
+          bash ${./scripts/check-configs.sh} ${baseline.configfile} ${diagnostic.configfile}
+          touch "$out"
+        '';
+        kernel-prepare = pkgs.runCommand "xhci-kernel-prepare-check" { } ''
+          mkdir -p "$out"
+          cp ${prepareCheck baseline}/release "$out/baseline-release"
+          cp ${prepareCheck diagnostic}/release "$out/diagnostic-release"
+        '';
+      };
 
       nixosModules.default = import ./nixos-module.nix {
         inherit baseline diagnostic;

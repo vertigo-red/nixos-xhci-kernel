@@ -63,6 +63,12 @@ jobs:
             echo '::error::Cachix publication failed. Replace CACHIX_AUTH_TOKEN with a valid token that has Read and Write permission for vertigo-red-xhci, then rerun the workflow.'
             exit 1
           fi
+      - name: Check actual releases and compile the changed xHCI source
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          nix build --no-update-lock-file .#checks.x86_64-linux.kernel-prepare --out-link result-prepare
+          cachix push vertigo-red-xhci "$(readlink -f result-prepare)"
 
   build:
     name: Build ${{ matrix.variant }}
