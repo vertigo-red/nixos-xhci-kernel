@@ -1,0 +1,18 @@
+Diagnostic proposal by Michal Pecio, 2026-08-31.
+Source: https://marc.info/?l=linux-usb&m=178816199087777&w=2
+Message-ID: <20260831093914.7e8a45d6.michal.pecio@gmail.com>
+
+Ignore the questionable residual length for Missed Service Error events.
+Keep -EXDEV reporting. This is a diagnostic experiment, not a proven fix.
+
+--- a/drivers/usb/host/xhci-ring.c
++++ b/drivers/usb/host/xhci-ring.c
+@@ -2421,7 +2421,7 @@ static void process_isoc_td(struct xhci_hcd *xhci, struct xhci_virt_ep *ep,
+ 		break;
+ 	case COMP_MISSED_SERVICE_ERROR:
+ 		frame->status = -EXDEV;
+-		sum_trbs_for_length = true;
++		requested = 0;
+ 		if (ep_trb != td->end_trb)
+ 			td->error_mid_td = true;
+ 		break;

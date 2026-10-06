@@ -1,0 +1,123 @@
+name: Build and publish xHCI kernels
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - flake.nix
+      - flake.lock
+      - nixos-module.nix
+      - patches/**
+      - scripts/**
+      - .github/workflows/build-kernels.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xhci-kernels-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check configs and NixOS integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Check cache credentials
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          if [[ -z "$CACHIX_AUTH_TOKEN" ]]; then
+            echo '::error::Add the repository Actions secret CACHIX_AUTH_TOKEN with write access to vertigo-red-xhci, then rerun this workflow.'
+            exit 1
+          fi
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        with:
+          extra_nix_config: |
+            max-jobs = 1
+            cores = 0
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: vertigo-red-xhci
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          useDaemon: false
+      - name: Evaluate recipes and NixOS integration
+        run: |
+          nix flake check --no-build --no-update-lock-file
+          for variant in baseline diagnostic; do
+            test "$(nix eval --json ".#lib.integration.${variant}.matchesPublished")" = true
+          done
+      - name: Build and compare kernel configurations
+        run: nix build --no-update-lock-file .#checks.x86_64-linux.kernel-config
+
+  build:
+    name: Build ${{ matrix.variant }}
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [baseline, diagnostic]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Free disk space for the full kernel build
+        run: |
+          # These are preinstalled SDKs on this ephemeral GitHub-hosted runner.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31
+        with:
+          extra_nix_config: |
+            max-jobs = 1
+            cores = 0
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+        with:
+          name: vertigo-red-xhci
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: true
+      - name: Build the image, modules and development output
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          mkdir -p build-metadata
+          nix build --no-update-lock-file --print-out-paths \
+            --out-link "result-${VARIANT}" \
+            ".#${VARIANT}" ".#${VARIANT}-modules" ".#${VARIANT}-dev" \
+            | tee build-metadata/store-paths.txt
+          release="$(nix eval --raw ".#packages.x86_64-linux.${VARIANT}.modDirVersion")"
+          image="$(nix eval --raw ".#packages.x86_64-linux.${VARIANT}.outPath")"
+          dev="$(nix eval --raw ".#packages.x86_64-linux.${VARIANT}.dev.outPath")"
+          test -s "$image/bzImage"
+          test "$(cat "$dev/lib/modules/$release/build/include/config/kernel.release")" = "$release"
+          sha256sum "$dev/lib/modules/$release/build/.config" > build-metadata/config.sha256
+          nix eval --json ".#packages.x86_64-linux.${VARIANT}" \
+            --apply 'k: { inherit (k) version modDirVersion drvPath; out = k.outPath; modules = k.modules.outPath; dev = k.dev.outPath; }' \
+            > build-metadata/kernel.json
+          cp flake.lock build-metadata/
+          printf 'variant=%s\ncommit=%s\nrelease=%s\n' \
+            "$VARIANT" "$GITHUB_SHA" "$release" > build-metadata/provenance.txt
+      - name: Publish all kernel outputs and verify cache entries
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          cachix push vertigo-red-xhci < build-metadata/store-paths.txt
+          while IFS= read -r path; do
+            store_name="${path##*/}"
+            store_hash="${store_name%%-*}"
+            curl --fail --silent --show-error --retry 3 \
+              "https://vertigo-red-xhci.cachix.org/${store_hash}.narinfo" \
+              -o "build-metadata/${store_hash}.narinfo"
+          done < build-metadata/store-paths.txt
+          echo '### Published kernel' >> "$GITHUB_STEP_SUMMARY"
+          cat build-metadata/provenance.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Save build metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: kernel-${{ matrix.variant }}-metadata
+          path: build-metadata/
+          if-no-files-found: error
+          retention-days: 90
